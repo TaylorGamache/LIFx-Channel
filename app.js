@@ -6,25 +6,14 @@ var request = require('request');
 var Cloudant = require('cloudant');
 var Config = require('config-js');
 var json = require('json');
-var config = new Config('./email_digest_config.js');
-var sendAPI = config.get('SENDGRID_KEY');
-var sendGrid = require('sendgrid')(sendAPI);
+const fs = require('fs');
+var config = new Config('./lifx_config.js');
+var lifxKey = config.get('LIFX_KEY');
 var me = config.get('CLOUDANT_USERNAME');
 var password = config.get('CLOUDANT_PW');
-var weatherAPIKey = config.get('API_KEY');
-var triggerCallback = "http://nsds-api-stage.mybluemix.net/api/v1/trigger/";
-//var httpQueue = require('./http_queue');
-
 var app = express();
-
 var cloudant = Cloudant({account:me, password:password});
-
-var db = cloudant.db.use('email_digest');
-var Q = [];
-
-app.use(bodyParser.json());
-// app.use(express.json());
-app.use(express.static(__dirname + '/public'));
+var db = cloudant.db.use('action_db');
 
 /******
 
@@ -32,158 +21,156 @@ INIT
 
 ******/
 
-//Gets all Emails out of the database and puts them in a queue at startup
-var allDocs = {"selector": { "_id": { "$gt": 0}}};
-db.find(allDocs ,function(err, result){
-	if (err) {
-		throw err;
-	} 
-	console.log('Found %d Email JSONs at startup.', result.docs.length);
-	for (var i = 0; i < result.docs.length; i++) {
-		//console.log('Email Number: %d', (i+1));
-		//console.log('Email Subject: %s', result.docs[i].Subject);
-		//console.log('Email Body: %s', result.docs[i].Body);
-		var email = {'to':result.docs[i].To, 'from': 'Email@Digest.Test', 
-					'subject': result.docs[i].Subject,'text':result.docs[i].Body};
-		var eQue = {'id':result.docs[i]._id, 'Timer':result.docs[i].timer, 'Email':email  };
-		Q.push(eQue);
+app.use(bodyParser.json());
+// app.use(express.json());
+app.use(express.static(__dirname + '/public'));
+
+console.log('LIFX Channel is up and running.');
+
+/***************
+
+DELETE END POINT
+
+****************/
+
+app.delete('/api/v1/lifx/delete/:recipeid', function(req, res){
+	var del_ID = req.params.recipeid;
+	
+	db.get(del_ID, function(err, data){
+		if(err){
+			res.json({success: false, msg: 'Failed to find the recipe in the database, please try again.'});
+		} else {
+			var rev = data._rev;
+			db.destroy(del_ID, rev,  function(err) {
+				if (!err) {
+					res.json({success: true, msg: 'Successfully deleted the lifx action from the database.'});
+					console.log("Successfully deleted doc"+ del_ID);
+				} else {
+					res.json({success: false, msg: 'Failed to delete recipe from the database, please try again.'});
+					//console.log("failed");
+				}
+			});
+		}
+	});
+});
+
+/**************************************
+
+ADD NEW OR UPDATE A RECIPE IN DATABASE
+
+**************************************/
 		
+//Endpoint for adding or changing emails in queue and database
+app.post('/api/v1/lifx/new', function(req, res){
+	//console.log(req.body);
+	var ID = req.body.recipeid;
+	var light = req.body.action.lightID;
+	var type = req.body.type;
+	//var fade = req.body.action.fadeDur;
+	var color = req.body.action.Color;
+	var scene = req.body.action.scene;
+	var bright = req.body.action.Brightness;
+	var breath = req.body.action.numBreath;
+	var blink = req.body.action.numBlink;
+	//will use fade in this
+	var transDur = req.body.action.transDur;
+	var advSet = req.body.action.advSettings;
+	
+	//Makes sure data in JSON is formatted and submitted correctly.
+	if(type != "turnOn" && type != "turnOff" && type != "toggle" && type != "scene" && type != "color" && type != "blink" && type != "breathe") {
+		res.json({success: false, msg: 'The incorrect recipe type was submitted.'});
+	} else if (ID == "") {
+		res.json({success: false, msg: 'No recipeID was submitted.'});
+	} else {
+		var actionJSON = {'lightID':light , 'transDur':transDur , 'color':color , 'scene':scene, 'brightness':bright, 'numBreathe':breath, 'numBlink':blink, 'advOption':advSet };
+		var recipeJSON = { 'relation':'LIFX', 'actionType':type, 'action': actionJSON};
+		
+		db.insert(recipeJSON, function(err, body, header){
+			if(err){
+				res.json({success: true, msg: 'Failed to store lifx recipe in database...please try again.'});
+			} else {
+				res.json({success: true, msg: 'LIFX action was submitted.'});
+			}
+		});		
 	}
-	console.log('Email Digest Channel is up and running.');
 });
 
 /***********************************
 
-ADD NEW OR UPDATE A RECIPE IN QUEUE
+ENDPOINT FOR ACTION BEING TRIGGERED
 
 ***********************************/
 		
-//Endpoint for adding or changing emails in queue
-app.post('/api/v1/emailDigest', function(req, res){
-	//console.log(req.headers.recipeid);
-	var ID = req.headers.recipeid;
-	var to = req.headers.destination;
-	var msg = req.headers.msg;
-	var sub = req.headers.subject;
-	var aggr = req.headers.aggregation;
-	
-	//Makes sure data in JSON is formatted and submitted correctly.
-	if(to == "") {
-		res.json({success: false, msg: 'No email to send to were submitted.'});
-	} else if (ID == "") {
-		res.json({success: false, msg: 'No recipeID was submitted.'});
-	} else if (request.timer == "day" || request.timer == "week" || request.timer == "month") {
-		res.json({success: false, msg: 'Incorrect timer type was submitted.'});
-	}  else {
-		res.json({success: true, msg: 'Email was submitted.'});
-		//Check if the ID exists and if it does update it
-		var tempQ = [];
-		var check = true;
-		var exists = false; 
-		while (check) {
-			var item = Q.pop();
-			if (item == null ) {
-				check = false;
-			} else  {
-				if (item.id == ID) {
-					console.log(item);
-					console.log("Replaced the above queued message with the submitted message...");
-					exists = true;
-					item.Timer = aggr;
-					item.Email.to = to;
-					item.Email.subject = sub;
-					item.Email.text = msg;
-				}
-				tempQ.push(item);
-				
-			}
-		}
-		//reset Q
-		Q = tempQ;
-		// If ID was not in queue than add it
-		if (exists == false) {
-			console.log("ID not in queue. Added as new message in queue.");
-			var email = {'to':to, 'from': 'Email@Digest.Test', 
-						'subject': sub,'text':msg};
-
-			var eQue = {'id':ID, 'Timer':aggr, 'Email':email  };
-			Q.push(eQue);
-		} 		
-	}
-});
-
-/******************
-
-Temperary Endpoints
-
-******************/
-
-//Endpoint for adding emails to database (Temperary)
-app.post('/api/v1/temp/new', function(req, res){
-	var request = req.body;
-	request.timer.callbackURL = "";
-	//request.timer.recipeID = "";
-	
-	//Makes sure data in JSON is formatted and submitted correctly.
-	if(request.To == "") {
-		res.json({success: false, msg: 'No email to send to were submitted.'});
-	} else if (request.callback == "") {
-		res.json({success: false, msg: 'No callback was submitted.'});
-	} else if (request.timer != "day" && request.timer != "week" && request.timer != "month") {
-		res.json({success: false, msg: 'Incorrect timer type was submitted.'});
-	}  else {
-		
-		//Insert new Email Digest Action into database
-		db.insert(request, function(err, body, header){
-			if(err){
-				res.json({success:false, msg:'Error adding Email Digest action.'});
-			}else{
-				var idNum = body.id;
-				res.json({success: true, msg: 'Successfully added the Email action to database.'});
-				
-				console.log('New Email Added to Database');
-				var email = {'to':request.To, 'from': 'Email@Digest.Test', 
-							'subject': request.Subject,'text':request.Body};
-				
-				var eQue = {'id':request._id, 'Timer':request.timer, 'Email':email  };
-				Q.push(eQue);			
-			}
-		});
-	}
-});
-
-//Sends email
-
-app.post('/api/v1/temp/send/:recipeid', function(req, res){
+//Endpoint for doing an action
+app.post('/api/v1/lifx/:recipeid', function(req, res){
 	var ID = req.params.recipeid;
-	var e;
-	var check = true;
-	var tempQ = Q;
-	while (check) {
-		var item = tempQ.pop();
-		
-		if (item == null ) {
-			check = false;
-			res.json({success: false, msg: 'Failed to find matching recipeID.'});
+	
+	//Makes sure data in JSON is formatted and submitted correctly.
+	if (ID == "") {
+		res.json({success: false, msg: 'No recipeID was submitted.'});
+	} else {
+		db.get(ID, function(err, data){
+		if(err){
+			res.json({success: false, msg: 'Failed to find the recipe in the database, please try again.'});
 		} else {
-			
-			if (item.id == ID) {
-				check = false;
-				e = item.Email;
+			if (data.relation == "LIFX") {
+				doAction(data);
+				res.json({success: true, msg: 'Sucessfully did the LIFx action.'});
+			} else {
+				res.json({success: false, msg: 'The recipeID enetered was not for a LIFx action, please try again.'});
 			}
-		}
+		}		
 	}
-	
-	sendGrid.send(e, function(err, json) {
-	if (err) { 
-		res.json({success: false, msg: 'Failed to send Email.'});
-	}
-		res.json({success: true, msg: 'Successfully sent email.'});
-	});
-	
 });
+
+/**************
+
+  FUNCTIONS
+
+**************/
+
+//does the LIFx action in the inputed recipe
+function doAction(recipe) {
+	var eMsg;
+	var xhttp = new XMLHttpRequest();
+	var url = "https://api.lifx.com/v1/";
+	var header = "Authorization: Bearer "+lifxKey;
+	//get all potential required info
+	var type = recipe.actionType;
+	var light = recipe.action.lightID;
+	var trans = recipe.action.transDur;
+	var color = recipe.action.color;
+	var scene = recipe.action.scene;
+	var bright = recipe.action.brightness;
+	var breath = recipe.action.numBreathe;
+	var blink = recipe.action.numBlink;
+	var advSet = recipe.action.advOption;
+	//find which type of lifx action to do
+	if (type == "turnOn") {
+		xhttp.open("POST", url, true);
+		//put credentials
+		xhttp.setRequestHeader("", "");
+		//put post info
+		xhttp.send("");
+	} else if (type == "turnOff") {
+		
+	} else if (type == "toggle") {
+		
+	} else if (type == "scene") {
+		
+	} else if (type == "color") {
+		
+	} else if (type == "breath") {
+		
+	} else if (type == "blink") {
+		
+	} else {
+		console.log("Not going into any type.");
+	}
+}
+
+
 
 
 
 app.listen(port);
-
