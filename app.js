@@ -77,7 +77,7 @@ app.post('/api/v1/lifx/new', function(req, res){
 	var advSet = req.body.action.advSettings;
 	
 	//Makes sure data in JSON is formatted and submitted correctly.
-	if(type != "turnOn" && type != "turnOff" && type != "toggle" && type != "scene" && type != "color" && type != "blink" && type != "breathe") {
+	if(type != "turnOn" && type != "turnOff" && type != "toggleLight" && type != "scene" && type != "changeColor" && type != "blink" && type != "breathe") {
 		res.json({success: false, msg: 'The incorrect recipe type was submitted.'});
 	} else if (ID == "") {
 		res.json({success: false, msg: 'No recipeID was submitted.'});
@@ -85,7 +85,7 @@ app.post('/api/v1/lifx/new', function(req, res){
 		var actionJSON = {'lightID':light , 'transDur':transDur , 'color':color , 'scene':scene, 'brightness':bright, 'numBreathe':breath, 'numBlink':blink, 'advOption':advSet };
 		var recipeJSON = { 'relation':'LIFX', 'actionType':type, 'action': actionJSON};
 		
-		db.insert(recipeJSON, function(err, body, header){
+		db.insert(recipeJSON, ID, function(err, body, header){
 			if(err){
 				res.json({success: true, msg: 'Failed to store lifx recipe in database...please try again.'});
 			} else {
@@ -110,16 +110,17 @@ app.post('/api/v1/lifx/:recipeid', function(req, res){
 		res.json({success: false, msg: 'No recipeID was submitted.'});
 	} else {
 		db.get(ID, function(err, data){
-		if(err){
-			res.json({success: false, msg: 'Failed to find the recipe in the database, please try again.'});
-		} else {
-			if (data.relation == "LIFX") {
-				doAction(data);
-				res.json({success: true, msg: 'Sucessfully did the LIFx action.'});
+			if(err){
+				res.json({success: false, msg: 'Failed to find the recipe in the database, please try again.'});
 			} else {
-				res.json({success: false, msg: 'The recipeID enetered was not for a LIFx action, please try again.'});
-			}
-		}		
+				if (data.relation == "LIFX") {
+					doAction(data);
+					res.json({success: true, msg: 'Sucessfully did the LIFx action.'});
+				} else {
+					res.json({success: false, msg: 'The recipeID enetered was not for a LIFx action, please try again.'});
+				}
+			}	
+		});
 	}
 });
 
@@ -154,11 +155,11 @@ function doAction(recipe) {
 		xhttp.send("");
 	} else if (type == "turnOff") {
 		
-	} else if (type == "toggle") {
+	} else if (type == "toggleLight") {
 		
 	} else if (type == "scene") {
 		
-	} else if (type == "color") {
+	} else if (type == "changeColor") {
 		
 	} else if (type == "breath") {
 		
